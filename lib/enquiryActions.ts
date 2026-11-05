@@ -1,6 +1,8 @@
 'use server';
 
+import { after } from 'next/server';
 import { createClient, supabaseConfigured } from '@/lib/supabase/server';
+import { sendLeadToKageflow } from '@/lib/kageflow';
 import type { EnquiryKind } from '@/types/db';
 
 export type FormState = { ok: boolean; message: string } | null;
@@ -10,7 +12,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const text = (fd: FormData, k: string, max: number) => String(fd.get(k) ?? '').trim().slice(0, max);
 
-/** Every public form posts here. Rows land in `enquiries`, which only staff can read. */
+/**
+ * Every public form posts here. The row lands in `enquiries` (only staff can read it),
+ * then a copy goes to Kageflow as a lead if the Kageflow keys are set.
+ */
 export async function submitEnquiry(_prev: FormState, fd: FormData): Promise<FormState> {
   // Honeypot: real people never fill the hidden "company" field.
   if (text(fd, 'company', 200)) return { ok: true, message: 'Thanks, we’ll be in touch shortly.' };
@@ -40,20 +45,47 @@ export async function submitEnquiry(_prev: FormState, fd: FormData): Promise<For
   }
 
   const supabase = await createClient();
+
+  // Visitors can't read cars that aren't on sale, so this also stops enquiries on hidden cars.
+  let vehicle: { id: string; make: string; model: string; year: number; stock_no: string | null; price_zar: number | null; slug: string } | null = null;
+  if (UUID.test(vehicleId)) {
+    const { data } = await supabase.from('vehicles').select('id, make, model, year, stock_no, price_zar, slug').eq('id', vehicleId).maybeSingle();
+    vehicle = data;
+  }
+
+  // The id is made here because visitors may insert enquiries but not read them back.
+  const id = crypto.randomUUID();
   const { error } = await supabase.from('enquiries').insert({
+    id,
     kind,
     name,
     email: email || null,
     phone: phone || null,
     message: message || null,
     preferred_date: date || null,
-    vehicle_id: UUID.test(vehicleId) ? vehicleId : null,
+    vehicle_id: vehicle?.id ?? null,
   });
 
   if (error) {
     console.error('submitEnquiry', error.message);
     return { ok: false, message: 'We couldn’t send that just now. Please try again or WhatsApp us.' };
   }
+
+  // Sent after the reply, so the visitor never waits on Kageflow.
+  after(() =>
+    sendLeadToKageflow({
+      id,
+      kind,
+      name,
+      email: email || null,
+      phone: phone || null,
+      message: message || null,
+      preferredDate: date || null,
+      vehicle: vehicle
+        ? { title: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, stockNo: vehicle.stock_no, price: vehicle.price_zar ? Number(vehicle.price_zar) : null, slug: vehicle.slug }
+        : null,
+    }),
+  );
 
   const done: Record<EnquiryKind, string> = {
     enquiry: 'Thanks! A salesperson will contact you shortly.',

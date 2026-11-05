@@ -9,7 +9,8 @@ const csp = [
   `default-src 'self'`,
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
   `style-src 'self' 'unsafe-inline'`,
-  `img-src 'self' data: blob: ${supabase}`.trim(),
+  // Kageflow's photo storage too: cars pushed from Kageflow show their photos by link
+  `img-src 'self' data: blob: ${supabase} https://*.supabase.co`.trim(),
   `font-src 'self'`,
   `connect-src 'self' ${supabase} ${supabase.replace(/^http/, 'ws')}${isDev ? ' ws://localhost:*' : ''}`.trim(),
   `object-src 'none'`,
